@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+
+"""rpgdb
+
+add "name" "tags" "system" "abstract"    ; Add new game
+
+find name "name"         ; Search by name
+find tag "tag"           ; Search by tag
+find system "system"     ; Search by system
+
+update "name" name "new name"             ; Replace name with new name
+update "name" system "new system"         ; Replace system with new system
+update "name" abstract "new abstract"     ; Replace abstract with new abstract
+update "name" tag "new tag"               ; Append tag with new tag(s)
+update "name" tag "new tag" "old tag"     ; Replace tag with new tag
+
+delete "name" all       ; Delete document
+delete "name" tag "tag"	; Delete tag
+delete "name" system    ; Delete system
+delete "name" abstract	; Delete abstract
+
+all     ; Print out all documents in database
+
+"""
+
+from tinydb import TinyDB, Query
+import readline
+import sys
+import traceback
+import os.path
+import re
+
+db = TinyDB('db.json')
+Game = Query()
+
+# History file for REPL
+history_file = '.rpgdb_history'
+
+# If the file exists, read frome it, otherwise create it
+if os.path.isfile(history_file):
+    readline.read_history_file(history_file)
+else:
+    open(history_file, 'a').close()
+
+def print_out_game(game):
+    """Pretty print game information."""
+    print(game['name'])
+    print('System: {}'.format(game['system']))
+    print('Tags:')
+    for t in sorted(game['tags']):
+        print('    {}'.format(t))
+    print('Abstract:')
+    print(game['abstract'])
+
+
+def tokenize(user_input):
+    """Take a string, convert it into tokens."""
+    white_space = re.compile(r'\s')
+    tokens = []
+    collector = ''
+    in_quotes = False
+
+    for c in user_input:
+        # Is this the first quote mark? Then set in_quotes to True, so the 
+        # tokenizer will ignore spaces.
+        if c == '"' and not in_quotes:
+            in_quotes = True
+        # Is this the second quote mark? Push collector onto the token list
+        # and clear collector. Set in_quotes to False.
+        elif c == '"' and in_quotes:
+            in_quotes = False
+            if collector != '':
+                tokens.append(collector)
+                collector = ''
+        # If we're not in quotes, we'll append a new token to tokens every time 
+        # we hit whitespace.
+        elif white_space.match(c) and not in_quotes:
+            if collector != '':
+                tokens.append(collector)
+                collector = ''
+        else:
+            collector += c
+
+    if collector != '':
+        tokens.append(collector)
+
+    return tokens
+
+
+def add(elements):
+    l = len(elements)
+    name = elements[0]
+    if db.search(Game.name == name) == []:
+        if l > 1:
+            tags = [t.strip() for t in elements[1].split(',')]
+        else:
+            tags = []
+        if l > 2:
+            game_system = elements[2]
+        else:
+            game_system = ''
+        if l > 3:
+            abstract = elements[3]
+        else:
+            abstract = ''
+        db.insert({'name': name,
+                   'tags': tags,
+                   'system': game_system,
+                   'abstract': abstract})
+        result = db.search(Game.name == name)
+    else:
+        result = 'Sorry, an entry by that name already exists in the database.'
+
+    return result
+
+
+def find(target, query):
+    if target == 'name':
+        result = db.search(Game.name == query)
+    elif target == 'tag':
+        result = db.search(Game.tags.any(query))
+    elif target == 'system':
+        result = db.search(Game.system == query)
+    return result
+
+
+def update(name, target, new_value, *args):
+    if target == 'name':
+        db.update({'name': new_value}, Game.name == name)
+        name = new_value
+    elif target == 'system':
+        db.update({'system': new_value}, Game.name == name)
+    elif target == 'abstract':
+        db.update({'abstract': new_value}, Game.name == name)
+    elif target == 'tag':
+        tags = db.search(Game.name == name)[0]['tags']
+        tags.append(new_value)
+        if len(args) == 1:
+            tags.remove(args[0])
+        db.update({'tags': tags}, Game.name == name)
+    return db.search(Game.name == name)
+
+
+def delete(name, target, *args):
+    if target == 'all':
+        db.remove(Game.name == name)
+    elif target == 'tag':
+        tags = db.search(Game.name == name)[0]['tags']
+        for arg in args:
+            tags.remove(arg)
+        db.update({'tags': tags}, Game.name == name)
+    elif target == 'system':
+        db.update({'system': ''}, Game.name == name)
+    elif target == 'abstract':
+        db.update({'abstract': ''}, Game.name == name)
+    return db.search(Game.name == name)
+
+
+def parse(tokens):
+    tokens_l = len(tokens)
+    command = tokens[0]
+    if command == 'add':
+        result = add(tokens[1:])
+    elif command == 'find':
+        target, query = tokens[1:3]
+        result = find(target, query)
+    elif command == 'update':
+        name, target, new_value = tokens[1:4]
+        if tokens_l == 4:
+            result = update(name, target, new_value)
+        else:
+            result = update(name, target, new_value, tokens[4])
+    elif command == 'delete':
+        name, target = tokens[1:3]
+        if tokens_l == 3:
+            result = delete(name, target)
+        else:
+            result = delete(name, target, tokens[3:])
+    elif command == 'all':
+        result = db.all()
+
+    elif command == 'bye' or command == 'exit':
+        result = 'exit'
+
+    else:
+        result = 'Sorry, that command is not understood.'
+
+    return result
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        for game in sorted(parse(sys.argv[1:]), key=lambda k: k['name']):
+            print_out_game(game)
+    else:
+        # Main loop
+        while True:
+            try:
+                out = parse(tokenize(input('rpgdb> ').strip()))
+
+                if out == 'exit':
+                    readline.write_history_file(history_file)
+                    break
+                elif out[0:5] == 'Sorry':
+                    print(out)
+                else:
+                    for game in sorted(out, key=lambda k: k['name']):
+                        print_out_game(game)
+            # If exception is caused by CTL+C or CTL+D, save command history and exit.
+            except (KeyboardInterrupt, EOFError):
+                readline.write_history_file(history_file)
+                break
+            # Catch the exeption and print it.
+            except:
+                v, e, t = sys.exc_info()
+                traceback.print_exception(v, e, t)
